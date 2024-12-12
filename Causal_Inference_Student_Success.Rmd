@@ -1,0 +1,214 @@
+---
+title: "CPSC540_Homework1"
+output:
+  html_document:
+    df_print: paged
+date: "2024-10-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(dagitty)
+library(ggdag)
+```
+
+```{r}
+data <- read.csv("Documents/CADS FALL 24 (FINAL SEM)/CPSC540/data.csv", sep = ";", header = TRUE, stringsAsFactors = FALSE)
+str(data)
+```
+
+```{r}
+summary(data)
+```
+Data Cleaning:
+```{r}
+# check for missing values
+missing_values <- sapply(data, function(x) sum(is.na(x)))
+missing_values
+```
+
+Rename columns with special characters
+```{r}
+# rename columns to remove apostraphes
+data <- data %>%
+  rename(
+    Mothers_qualification = `Mother.s.qualification`,
+    Fathers_qualification = `Father.s.qualification`,
+    Mothers_occupation = `Mother.s.occupation`,
+    Fathers_occupation = `Father.s.occupation`
+  )
+```
+
+```{r}
+# standardize column names by replacing non-standard characters with underscores
+colnames(data) <- make.names(colnames(data))
+```
+
+```{r}
+# conert columns to factors and numeric
+data <- data %>%
+  mutate(
+    Daytime.evening.attendance = as.factor(Daytime.evening.attendance.),
+    Daytime.evening.attendance. = recode(Daytime.evening.attendance., 
+                                         `1` = "Daytime", 
+                                         `0` = "Evening"),
+    Age.at.enrollment = as.numeric(Age.at.enrollment),
+    Admission.grade = as.numeric(Admission.grade),
+    Scholarship.holder = as.factor(Scholarship.holder),
+    Tuition.fees.up.to.date = as.factor(Tuition.fees.up.to.date),
+    Curricular.units.1st.sem..grade. = as.numeric(Curricular.units.1st.sem..grade.),
+    Target = as.factor(Target)
+  )
+```
+
+Exploratory Data Analysis
+
+
+```{r}
+# Define the DAG with all relevant variables
+dag <- dagitty("dag {
+  Attendance -> Dropout
+  Age -> Attendance
+  Age -> Dropout
+  Admission -> Attendance
+  Admission -> Dropout
+  Scholarship -> Attendance
+  Scholarship -> Dropout
+  Tuition_UpToDate -> Attendance
+  Tuition_UpToDate -> Dropout
+  First_Sem_Grade -> Attendance
+  First_Sem_Grade -> Dropout
+}")
+
+ggdag(dag, text = TRUE) +
+  theme_minimal() +
+  labs(title = "DAG for Attendance Type and Dropout Relationship") +
+  theme(legend.position = "none")
+```
+
+
+Plot 1: Distribution of Attendance Type
+```{r}
+ggplot(data, aes(x = Daytime.evening.attendance.)) +
+  geom_bar(fill = "skyblue") +
+  labs(title = "Distribution of Daytime and Evening Students", x = "Attendance Type", y = "Count") +
+  scale_x_discrete(labels = c("Daytime", "Evening")) +
+  theme_minimal()
+```
+
+```{r}
+# recode Target variable as binary
+# Dropout = 1 and others = 0
+data <- data %>%
+  mutate(Target = ifelse(Target == "Dropout", 1, 0))
+```
+
+```{r}
+# calculate dropout rate by attendance type
+dropout_rate <- data_filtered %>%
+  group_by(Daytime.evening.attendance.) %>%
+  summarize(dropout_rate = mean(Target), .groups = 'drop')
+
+print(dropout_rate)
+```
+Plot 2: Dropout Rate by Attendance Type
+```{r}
+# Plot dropout rates by attendance type
+ggplot(dropout_rate, aes(x = Daytime.evening.attendance., y = dropout_rate)) +
+  geom_col(fill = "coral") +
+  labs(title = "Dropout Rate by Attendance Type", x = "Attendance Type", y = "Dropout Rate") +
+  theme_minimal()
+```
+Plot 3: Socioeconomic Status and Dropout Relationship
+```{r}
+# Age at Enrollment plot
+ggplot(data, aes(x = Age.at.enrollment)) +
+  geom_histogram(bins = 15, fill = "lightgreen") +
+  labs(title = "Age Distribution at Enrollment", x = "Age", y = "Count") +
+  theme_minimal()
+
+# Admission Grade plot
+ggplot(data, aes(x = Admission.grade)) +
+  geom_histogram(bins = 20, fill = "lightblue") +
+  labs(title = "Admission Grade Distribution", x = "Admission Grade", y = "Count") +
+  theme_minimal()
+```
+Baseline Logistic Regression
+
+```{r}
+# Baseline logistic regression model
+baseline_model <- glm(Target ~ Daytime.evening.attendance. + Age.at.enrollment + Admission.grade +
+                        Scholarship.holder + Tuition.fees.up.to.date + Curricular.units.1st.sem..grade., 
+                      data = data_filtered, 
+                      family = binomial)
+```
+
+```{r}
+summary(baseline_model)
+# print odds ratio
+exp(coef(baseline_model))
+```
+
+Implementing Inverse Probability of Treatment Weighting (IPTW)
+```{r}
+# Recode Daytime.evening.attendance. as binary (0 = Daytime, 1 = Evening)
+data_filtered <- data_filtered %>%
+  mutate(Daytime.evening.attendance. = ifelse(Daytime.evening.attendance. == "Evening", 1, 0))
+
+# Calculate Propensity Scores
+propensity_model <- glm(Daytime.evening.attendance. ~ Age.at.enrollment + Admission.grade +
+                         Scholarship.holder + Tuition.fees.up.to.date + Curricular.units.1st.sem..grade., 
+                        data = data_filtered, family = binomial)
+
+# Calculate weights based on propensity scores
+data_filtered$weights <- ifelse(data_filtered$Daytime.evening.attendance. == 1,
+                                1 / predict(propensity_model, type = "response"),
+                                1 / (1 - predict(propensity_model, type = "response")))
+
+# Fit Weighted Logistic Regression Model
+iptw_model <- glm(Target ~ Daytime.evening.attendance., data = data_filtered, 
+                  family = binomial, weights = weights)
+summary(iptw_model)
+
+# Odds Ratios
+exp(coef(iptw_model))
+```
+
+Visualizations:
+1. Propensity Score Distribution by Attendance Type
+```{r}
+library(ggplot2)
+
+# calculate propensity scores
+data_filtered$propensity_score <- predict(propensity_model, type = "response")
+
+# plot density of propensity scores by attendance type
+ggplot(data_filtered, aes(x = propensity_score, fill = as.factor(Daytime.evening.attendance.))) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Distribution of Propensity Scores by Attendance Type", 
+       x = "Propensity Score", y = "Density", fill = "Attendance Type") +
+  theme_minimal()
+```
+2. Weighted Dropout Rates by Attendance Type
+
+```{r}
+# calculate weighted dropout rates by attendance type
+weighted_dropout_rate <- data_filtered %>%
+  group_by(Daytime.evening.attendance.) %>%
+  summarize(weighted_dropout = weighted.mean(Target, weights))
+
+# plot weighted dropout rates
+ggplot(weighted_dropout_rate, aes(x = as.factor(Daytime.evening.attendance.), y = weighted_dropout)) +
+  geom_col(fill = "coral") +
+  labs(title = "Weighted Dropout Rates by Attendance Type", 
+       x = "Attendance Type", y = "Weighted Dropout Rate") +
+  theme_minimal()
+
+```
